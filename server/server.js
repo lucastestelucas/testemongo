@@ -1,103 +1,121 @@
 require('./config/config');
-
-const _ = require('lodash');
 const express = require('express');
 const bodyParser = require('body-parser');
-const {ObjectID} = require('mongodb');
-
-var {mongoose} = require('./db/mongoose');
-var {Todo} = require('./models/todo');
-var {User} = require('./models/user');
+const {MongoClient, ObjectID} = require('mongodb');
+var moment = require('moment');
 
 var app = express();
-const port = process.env.PORT;
+const port = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 
-app.post('/todos', (req, res) => {
-  var todo = new Todo({
-    text: req.body.text
-  });
+app.post('/locations', (req, res) => {
+    var lat = req.body.lat;
+    var lng = req.body.lng;
+    //timestamp = req.body.timestamp;
+    var timestamp = moment().unix();
+    var userId = req.body.userId;
 
-  todo.save().then((doc) => {
-    res.send(doc);
-  }, (e) => {
-    res.status(400).send(e);
-  });
+    MongoClient.connect(process.env.MONGODB_URI, (err, db) => {
+        if (err) {
+            db.close();
+            return res.status(400).send('Unable to connect to MongoDB server');
+            console.log(err);
+        }
+        console.log('Connected to MongoDB server');
+
+        db.collection('LocationHistory').findOneAndUpdate({
+            "userId" : userId
+        }, {
+            $set: {
+                "timestamp" : timestamp,
+                "lat" : lat,
+                "lng" : lng
+            },
+            $push: {
+                "history" : {
+                    "timestamp" : timestamp,
+                    "lat" : lat,
+                    "lng" : lng
+                }
+            }
+        }, {
+            returnOriginal: false
+        }).then((result) => {
+            console.log(result);
+            
+            if(result.lastErrorObject.updatedExisting) {
+                db.close(); 
+                return res.send(result);
+            } else {
+                db.collection('LocationHistory').insertOne({
+                    "userId" : userId,
+                    "timestamp" : timestamp,
+                    "lat" : lat,
+                    "lng" : lng,
+                    "history" : [
+                        {
+                            "timestamp" : timestamp,
+                            "lat" : lat,
+                            "lng" : lng             
+                        }
+                    ]
+                }, (err, result) => {
+                    db.close();
+                    if (err) {
+                        return res.status(400).send('Unable to insert location');
+                        console.log(result);
+                    }
+                    return res.send(result);                    
+                });
+            }
+        });   
+        //db.close(); // inserido acima nos devidos locais devido à assincronissidade do node
+    });
 });
 
-app.get('/todos', (req, res) => {
-  Todo.find().then((todos) => {
-    res.send({todos});
-  }, (e) => {
-    res.status(400).send(e);
-  });
-});
+app.get('/location/:userId/:startingTimestamp/:endingTimestamp', (req, res) => {
+    var userId = ParseInt(req.params.userId);
+    console.log("====> USER ID: " + userId);
+    var startingTimestamp = Number(req.params.startingTimestamp);
+    var endingTimestamp = Number(req.params.endingTimestamp);
+    var timestamp = moment().unix();
 
-app.get('/todos/:id', (req, res) => {
-  var id = req.params.id;
+    MongoClient.connect(process.env.MONGODB_URI, (err, db) => {
+        if (err) {
+            db.close();
+            return res.status(400).send('Unable to connect to MongoDB server');
+            console.log(err);
+        }
+        console.log('Connected to MongoDB server');
 
-  if (!ObjectID.isValid(id)) {
-    return res.status(404).send();
-  }
+        db.collection('LocationHistory').findOne({
+            "userId" : userId
+        }, {
+            "history" : true,
+            "_id" : false
+        }).then((result) => {
+            if(!result.history) {
+                return res.status(404).send("An error occurred.");
+            }
 
-  Todo.findById(id).then((todo) => {
-    if (!todo) {
-      return res.status(404).send();
-    }
+            var locations = [];
+            for(var i = 0; i < result.history.length; i++) {
+                if(result.history[i].timestamp >= startingTimestamp && result.history[i].timestamp <= endingTimestamp) {
+                      locations.push(result.history[i])
+                }
+            }
 
-    res.send({todo});
-  }).catch((e) => {
-    res.status(400).send();
-  });
-});
-
-app.delete('/todos/:id', (req, res) => {
-  var id = req.params.id;
-
-  if (!ObjectID.isValid(id)) {
-    return res.status(404).send();
-  }
-
-  Todo.findByIdAndRemove(id).then((todo) => {
-    if (!todo) {
-      return res.status(404).send();
-    }
-
-    res.send({todo});
-  }).catch((e) => {
-    res.status(400).send();
-  });
-});
-
-app.patch('/todos/:id', (req, res) => {
-  var id = req.params.id;
-  var body = _.pick(req.body, ['text', 'completed']);
-
-  if (!ObjectID.isValid(id)) {
-    return res.status(404).send();
-  }
-
-  if (_.isBoolean(body.completed) && body.completed) {
-    body.completedAt = new Date().getTime();
-  } else {
-    body.completed = false;
-    body.completedAt = null;
-  }
-
-  Todo.findByIdAndUpdate(id, {$set: body}, {new: true}).then((todo) => {
-    if (!todo) {
-      return res.status(404).send();
-    }
-
-    res.send({todo});
-  }).catch((e) => {
-    res.status(400).send();
-  })
+            console.log(locations);
+            db.close();
+            return res.send(locations);
+        });
+        //db.close(); // inserido acima nos devidos locais devido à assincronissidade do node
+    });
 });
 
 app.listen(port, () => {
-  console.log(`Started up at port ${port}`);
+    console.log(`Started up at port ${port}`);
 });
 
 module.exports = {app};
